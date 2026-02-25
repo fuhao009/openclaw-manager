@@ -189,6 +189,39 @@ fn ensure_aistock_default_provider(config: &mut Value) {
     config["agents"]["defaults"]["models"]["aistock/gpt-5.2"] = json!({});
 }
 
+fn ensure_homebrew_macos() -> Result<String, String> {
+    if !platform::is_macos() {
+        return Ok("".to_string());
+    }
+
+    let script = r#"
+if command -v brew >/dev/null 2>&1; then
+    echo "Homebrew 已安装"
+    brew --version
+    exit 0
+fi
+
+echo "未检测到 Homebrew，开始安装..."
+NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$('/opt/homebrew/bin/brew' shellenv)"
+elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$('/usr/local/bin/brew' shellenv)"
+fi
+
+if ! command -v brew >/dev/null 2>&1; then
+    echo "Homebrew 安装失败"
+    exit 1
+fi
+
+echo "Homebrew 安装成功"
+brew --version
+"#;
+
+    shell::run_bash_output(script)
+}
+
 /// 检查环境状态
 #[command]
 pub async fn check_environment() -> Result<EnvironmentStatus, String> {
@@ -569,21 +602,19 @@ if ($nodeVersion) {
 
 /// macOS 安装 Node.js
 async fn install_nodejs_macos() -> Result<InstallResult, String> {
-    // 使用 Homebrew 安装
-    let script = r#"
-# 检查 Homebrew
-if ! command -v brew &> /dev/null; then
-    echo "安装 Homebrew..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    
-    # 配置 PATH
-    if [[ -f /opt/homebrew/bin/brew ]]; then
-        eval "$(/opt/homebrew/bin/brew shellenv)"
-    elif [[ -f /usr/local/bin/brew ]]; then
-        eval "$(/usr/local/bin/brew shellenv)"
-    fi
-fi
+    match ensure_homebrew_macos() {
+        Ok(output) => append_install_output("[安装Node.js][macOS] Homebrew 预检查", &output),
+        Err(e) => {
+            append_install_output("[安装Node.js][macOS] Homebrew 预检查失败", &e);
+            return Ok(InstallResult {
+                success: false,
+                message: "Homebrew 安装失败".to_string(),
+                error: Some(e),
+            });
+        }
+    }
 
+    let script = r#"
 echo "安装 Node.js 22..."
 brew install node@22
 brew link --overwrite node@22
@@ -763,6 +794,20 @@ if ($openclawVersion) {
 
 /// Unix 系统安装 OpenClaw
 async fn install_openclaw_unix() -> Result<InstallResult, String> {
+    if platform::is_macos() {
+        match ensure_homebrew_macos() {
+            Ok(output) => append_install_output("[安装OpenClaw][macOS] Homebrew 预检查", &output),
+            Err(e) => {
+                append_install_output("[安装OpenClaw][macOS] Homebrew 预检查失败", &e);
+                return Ok(InstallResult {
+                    success: false,
+                    message: "Homebrew 安装失败".to_string(),
+                    error: Some(e),
+                });
+            }
+        }
+    }
+
     let script = r#"
 # 检查 Node.js
 if ! command -v node &> /dev/null; then
@@ -1023,6 +1068,23 @@ echo "========================================"
 echo "    OpenClaw 安装向导"
 echo "========================================"
 echo ""
+
+if ! command -v brew &> /dev/null; then
+    echo "正在安装 Homebrew..."
+    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+
+if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$('/opt/homebrew/bin/brew' shellenv)"
+elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$('/usr/local/bin/brew' shellenv)"
+fi
+
+if ! command -v node &> /dev/null; then
+    echo "正在安装 Node.js 22..."
+    brew install node@22
+    brew link --overwrite node@22
+fi
 
 echo "正在安装 OpenClaw..."
 npm install -g openclaw@latest
