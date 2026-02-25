@@ -1,5 +1,7 @@
-use crate::utils::{platform, shell};
+use crate::utils::{file, platform, shell};
+use chrono::Local;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tauri::command;
 use log::{info, warn, error, debug};
 
@@ -39,6 +41,152 @@ pub struct InstallResult {
     pub success: bool,
     pub message: String,
     pub error: Option<String>,
+}
+
+fn get_install_log_path() -> String {
+    let config_dir = platform::get_config_dir();
+    if platform::is_windows() {
+        format!("{}\\logs\\installer.log", config_dir)
+    } else {
+        format!("{}/logs/installer.log", config_dir)
+    }
+}
+
+fn append_install_log(message: &str) {
+    let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
+    let log_line = format!("[{}] {}", ts, message);
+
+    if let Err(e) = file::append_file(&get_install_log_path(), &log_line) {
+        warn!("[安装日志] 写入失败: {}", e);
+    }
+}
+
+fn append_install_output(title: &str, output: &str) {
+    append_install_log(title);
+    for line in output.lines() {
+        if !line.trim().is_empty() {
+            append_install_log(&format!("  {}", line));
+        }
+    }
+}
+
+fn reset_install_log(operation: &str) {
+    let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
+    let content = format!("[{}] ===== {} =====\n", ts, operation);
+
+    if let Err(e) = file::write_file(&get_install_log_path(), &content) {
+        warn!("[安装日志] 重置失败: {}", e);
+    }
+}
+
+#[command]
+pub async fn get_install_logs(lines: Option<u32>) -> Result<Vec<String>, String> {
+    let n = lines.unwrap_or(200) as usize;
+    let log_path = get_install_log_path();
+
+    if !file::file_exists(&log_path) {
+        return Ok(vec![]);
+    }
+
+    file::read_last_lines(&log_path, n)
+        .map_err(|e| format!("读取安装日志失败: {}", e))
+}
+
+fn load_config_json_or_default() -> Value {
+    let config_path = platform::get_config_file_path();
+    if let Ok(content) = file::read_file(&config_path) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&content) {
+            return parsed;
+        }
+    }
+    json!({})
+}
+
+fn save_config_json(config: &Value) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("序列化配置失败: {}", e))?;
+    file::write_file(&platform::get_config_file_path(), &content)
+        .map_err(|e| format!("写入配置失败: {}", e))
+}
+
+fn ensure_aistock_default_provider(config: &mut Value) {
+    if config.get("models").is_none() {
+        config["models"] = json!({});
+    }
+    if config["models"].get("providers").is_none() {
+        config["models"]["providers"] = json!({});
+    }
+    if config["models"].get("mode").is_none() {
+        config["models"]["mode"] = json!("merge");
+    }
+
+    let existing_aistock_api_key = config
+        .pointer("/models/providers/aistock/apiKey")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.starts_with("sk-"));
+
+    let mut aistock_provider = config
+        .pointer("/models/providers/sub2api")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "baseUrl": "https://www.aistock.tech/v1",
+                "api": "openai-responses",
+                "authHeader": true,
+                "headers": {
+                    "User-Agent": "curl/8.0",
+                    "OpenAI-Beta": "responses=v1"
+                },
+                "models": [
+                    {
+                        "id": "gpt-5.2",
+                        "name": "gpt-5.2",
+                        "api": "openai-responses",
+                        "reasoning": false,
+                        "input": ["text", "image"],
+                        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        "contextWindow": 150000,
+                        "maxTokens": 8192
+                    }
+                ]
+            })
+        });
+
+    if let Some(api_key) = existing_aistock_api_key {
+        aistock_provider["apiKey"] = json!(api_key);
+    }
+
+    if aistock_provider.get("api").is_none() {
+        aistock_provider["api"] = json!("openai-responses");
+    }
+    if aistock_provider.get("authHeader").is_none() {
+        aistock_provider["authHeader"] = json!(true);
+    }
+    if aistock_provider.get("headers").is_none() {
+        aistock_provider["headers"] = json!({
+            "User-Agent": "curl/8.0",
+            "OpenAI-Beta": "responses=v1"
+        });
+    }
+
+    config["models"]["providers"]["aistock"] = aistock_provider;
+
+    if config.get("agents").is_none() {
+        config["agents"] = json!({});
+    }
+    if config["agents"].get("defaults").is_none() {
+        config["agents"]["defaults"] = json!({});
+    }
+    if config["agents"]["defaults"].get("model").is_none() {
+        config["agents"]["defaults"]["model"] = json!({});
+    }
+    if config["agents"]["defaults"].get("models").is_none() {
+        config["agents"]["defaults"]["models"] = json!({});
+    }
+
+    config["agents"]["defaults"]["model"]["primary"] = json!("aistock/gpt-5.2");
+    config["agents"]["defaults"]["models"]["aistock/gpt-5.2"] = json!({});
 }
 
 /// 检查环境状态
@@ -287,8 +435,12 @@ fn check_node_version_requirement(version: &Option<String>) -> bool {
 #[command]
 pub async fn install_nodejs() -> Result<InstallResult, String> {
     info!("[安装Node.js] 开始安装 Node.js...");
+    reset_install_log("Node.js 自动安装");
+    append_install_log("[安装Node.js] 开始安装 Node.js...");
+
     let os = platform::get_os();
     info!("[安装Node.js] 检测到操作系统: {}", os);
+    append_install_log(&format!("[安装Node.js] 检测到操作系统: {}", os));
     
     let result = match os.as_str() {
         "windows" => {
@@ -314,9 +466,24 @@ pub async fn install_nodejs() -> Result<InstallResult, String> {
     };
     
     match &result {
-        Ok(r) if r.success => info!("[安装Node.js] ✓ 安装成功"),
-        Ok(r) => warn!("[安装Node.js] ✗ 安装失败: {}", r.message),
-        Err(e) => error!("[安装Node.js] ✗ 安装错误: {}", e),
+        Ok(r) if r.success => {
+            info!("[安装Node.js] ✓ 安装成功");
+            append_install_log("[安装Node.js] ✓ 安装成功");
+            if let Some(err) = &r.error {
+                append_install_output("[安装Node.js] 返回错误详情", err);
+            }
+        }
+        Ok(r) => {
+            warn!("[安装Node.js] ✗ 安装失败: {}", r.message);
+            append_install_log(&format!("[安装Node.js] ✗ 安装失败: {}", r.message));
+            if let Some(err) = &r.error {
+                append_install_output("[安装Node.js] 错误详情", err);
+            }
+        }
+        Err(e) => {
+            error!("[安装Node.js] ✗ 安装错误: {}", e);
+            append_install_log(&format!("[安装Node.js] ✗ 安装错误: {}", e));
+        }
     }
     
     result
@@ -373,6 +540,7 @@ if ($nodeVersion) {
     
     match shell::run_powershell_output(script) {
         Ok(output) => {
+            append_install_output("[安装Node.js][Windows] 安装脚本输出", &output);
             // 验证安装
             if get_node_version().is_some() {
                 Ok(InstallResult {
@@ -388,11 +556,14 @@ if ($nodeVersion) {
                 })
             }
         }
-        Err(e) => Ok(InstallResult {
-            success: false,
-            message: "Node.js 安装失败".to_string(),
-            error: Some(e),
-        }),
+        Err(e) => {
+            append_install_output("[安装Node.js][Windows] 安装脚本错误", &e);
+            Ok(InstallResult {
+                success: false,
+                message: "Node.js 安装失败".to_string(),
+                error: Some(e),
+            })
+        }
     }
 }
 
@@ -422,16 +593,22 @@ node --version
 "#;
     
     match shell::run_bash_output(script) {
-        Ok(output) => Ok(InstallResult {
-            success: true,
-            message: format!("Node.js 安装成功！{}", output),
-            error: None,
-        }),
-        Err(e) => Ok(InstallResult {
-            success: false,
-            message: "Node.js 安装失败".to_string(),
-            error: Some(e),
-        }),
+        Ok(output) => {
+            append_install_output("[安装Node.js][macOS] 安装脚本输出", &output);
+            Ok(InstallResult {
+                success: true,
+                message: format!("Node.js 安装成功！{}", output),
+                error: None,
+            })
+        }
+        Err(e) => {
+            append_install_output("[安装Node.js][macOS] 安装脚本错误", &e);
+            Ok(InstallResult {
+                success: false,
+                message: "Node.js 安装失败".to_string(),
+                error: Some(e),
+            })
+        }
     }
 }
 
@@ -465,16 +642,22 @@ node --version
 "#;
     
     match shell::run_bash_output(script) {
-        Ok(output) => Ok(InstallResult {
-            success: true,
-            message: format!("Node.js 安装成功！{}", output),
-            error: None,
-        }),
-        Err(e) => Ok(InstallResult {
-            success: false,
-            message: "Node.js 安装失败".to_string(),
-            error: Some(e),
-        }),
+        Ok(output) => {
+            append_install_output("[安装Node.js][Linux] 安装脚本输出", &output);
+            Ok(InstallResult {
+                success: true,
+                message: format!("Node.js 安装成功！{}", output),
+                error: None,
+            })
+        }
+        Err(e) => {
+            append_install_output("[安装Node.js][Linux] 安装脚本错误", &e);
+            Ok(InstallResult {
+                success: false,
+                message: "Node.js 安装失败".to_string(),
+                error: Some(e),
+            })
+        }
     }
 }
 
@@ -482,8 +665,12 @@ node --version
 #[command]
 pub async fn install_openclaw() -> Result<InstallResult, String> {
     info!("[安装OpenClaw] 开始安装 OpenClaw...");
+    reset_install_log("OpenClaw 自动安装");
+    append_install_log("[安装OpenClaw] 开始安装 OpenClaw...");
+
     let os = platform::get_os();
     info!("[安装OpenClaw] 检测到操作系统: {}", os);
+    append_install_log(&format!("[安装OpenClaw] 检测到操作系统: {}", os));
     
     let result = match os.as_str() {
         "windows" => {
@@ -497,9 +684,24 @@ pub async fn install_openclaw() -> Result<InstallResult, String> {
     };
     
     match &result {
-        Ok(r) if r.success => info!("[安装OpenClaw] ✓ 安装成功"),
-        Ok(r) => warn!("[安装OpenClaw] ✗ 安装失败: {}", r.message),
-        Err(e) => error!("[安装OpenClaw] ✗ 安装错误: {}", e),
+        Ok(r) if r.success => {
+            info!("[安装OpenClaw] ✓ 安装成功");
+            append_install_log("[安装OpenClaw] ✓ 安装成功");
+            if let Some(err) = &r.error {
+                append_install_output("[安装OpenClaw] 返回错误详情", err);
+            }
+        }
+        Ok(r) => {
+            warn!("[安装OpenClaw] ✗ 安装失败: {}", r.message);
+            append_install_log(&format!("[安装OpenClaw] ✗ 安装失败: {}", r.message));
+            if let Some(err) = &r.error {
+                append_install_output("[安装OpenClaw] 错误详情", err);
+            }
+        }
+        Err(e) => {
+            error!("[安装OpenClaw] ✗ 安装错误: {}", e);
+            append_install_log(&format!("[安装OpenClaw] ✗ 安装错误: {}", e));
+        }
     }
     
     result
@@ -533,6 +735,7 @@ if ($openclawVersion) {
     
     match shell::run_powershell_output(script) {
         Ok(output) => {
+            append_install_output("[安装OpenClaw][Windows] 安装脚本输出", &output);
             if get_openclaw_version().is_some() {
                 Ok(InstallResult {
                     success: true,
@@ -547,11 +750,14 @@ if ($openclawVersion) {
                 })
             }
         }
-        Err(e) => Ok(InstallResult {
-            success: false,
-            message: "OpenClaw 安装失败".to_string(),
-            error: Some(e),
-        }),
+        Err(e) => {
+            append_install_output("[安装OpenClaw][Windows] 安装脚本错误", &e);
+            Ok(InstallResult {
+                success: false,
+                message: "OpenClaw 安装失败".to_string(),
+                error: Some(e),
+            })
+        }
     }
 }
 
@@ -572,16 +778,22 @@ openclaw --version
 "#;
     
     match shell::run_bash_output(script) {
-        Ok(output) => Ok(InstallResult {
-            success: true,
-            message: format!("OpenClaw 安装成功！{}", output),
-            error: None,
-        }),
-        Err(e) => Ok(InstallResult {
-            success: false,
-            message: "OpenClaw 安装失败".to_string(),
-            error: Some(e),
-        }),
+        Ok(output) => {
+            append_install_output("[安装OpenClaw][Unix] 安装脚本输出", &output);
+            Ok(InstallResult {
+                success: true,
+                message: format!("OpenClaw 安装成功！{}", output),
+                error: None,
+            })
+        }
+        Err(e) => {
+            append_install_output("[安装OpenClaw][Unix] 安装脚本错误", &e);
+            Ok(InstallResult {
+                success: false,
+                message: "OpenClaw 安装失败".to_string(),
+                error: Some(e),
+            })
+        }
     }
 }
 
@@ -642,6 +854,17 @@ pub async fn init_openclaw_config() -> Result<InstallResult, String> {
     
     match result {
         Ok(output) => {
+            let mut config = load_config_json_or_default();
+            ensure_aistock_default_provider(&mut config);
+            if let Err(e) = save_config_json(&config) {
+                error!("[初始化配置] ✗ 写入默认 aistock 配置失败: {}", e);
+                return Ok(InstallResult {
+                    success: false,
+                    message: "默认 Provider 初始化失败".to_string(),
+                    error: Some(e),
+                });
+            }
+
             info!("[初始化配置] ✓ 配置初始化成功");
             debug!("[初始化配置] 命令输出: {}", output);
             Ok(InstallResult {
@@ -664,6 +887,7 @@ pub async fn init_openclaw_config() -> Result<InstallResult, String> {
 /// 打开终端执行安装脚本（用于需要管理员权限的场景）
 #[command]
 pub async fn open_install_terminal(install_type: String) -> Result<String, String> {
+    append_install_log(&format!("[安装] 打开终端安装流程: {}", install_type));
     match install_type.as_str() {
         "nodejs" => open_nodejs_install_terminal().await,
         "openclaw" => open_openclaw_install_terminal().await,
@@ -706,6 +930,12 @@ Read-Host "按回车键关闭此窗口"
         // macOS: 打开 Terminal.app
         let script_content = r#"#!/bin/bash
 clear
+LOG_DIR="$HOME/.openclaw/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/installer.log"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] [安装Node.js][macOS终端] 启动手动安装" >> "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 echo "========================================"
 echo "    Node.js 安装向导"
 echo "========================================"
@@ -783,6 +1013,12 @@ Read-Host "按回车键关闭此窗口"
     } else if platform::is_macos() {
         let script_content = r#"#!/bin/bash
 clear
+LOG_DIR="$HOME/.openclaw/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/installer.log"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] [安装OpenClaw][macOS终端] 启动手动安装" >> "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 echo "========================================"
 echo "    OpenClaw 安装向导"
 echo "========================================"
@@ -825,6 +1061,12 @@ read -p "按回车键关闭此窗口..."
         // Linux
         let script_content = r#"#!/bin/bash
 clear
+LOG_DIR="$HOME/.openclaw/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/installer.log"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] [安装OpenClaw][Linux终端] 启动手动安装" >> "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 echo "========================================"
 echo "    OpenClaw 安装向导"
 echo "========================================"

@@ -68,6 +68,8 @@ export interface OfficialProvider {
   default_base_url: string | null;
   api_type: string;
   suggested_models: SuggestedModel[];
+  recommended: boolean;
+  is_default: boolean;
   requires_api_key: boolean;
   docs_url: string | null;
 }
@@ -85,6 +87,9 @@ export interface SuggestedModel {
 export interface ConfiguredProvider {
   name: string;
   base_url: string;
+  api_type: string | null;
+  auth_header: boolean | null;
+  headers: Record<string, string> | null;
   api_key_masked: string | null;
   has_api_key: boolean;
   models: ConfiguredModel[];
@@ -97,12 +102,14 @@ export interface ConfiguredModel {
   api_type: string | null;
   context_window: number | null;
   max_tokens: number | null;
+  params: Record<string, unknown> | null;
   is_primary: boolean;
 }
 
 // AI 配置概览
 export interface AIConfigOverview {
   primary_model: string | null;
+  model_fallbacks: string[];
   configured_providers: ConfiguredProvider[];
   available_models: string[];
 }
@@ -116,6 +123,7 @@ export interface ModelConfig {
   context_window: number | null;
   max_tokens: number | null;
   reasoning: boolean | null;
+  params: Record<string, unknown> | null;
   cost: { input: number; output: number; cache_read: number; cache_write: number } | null;
 }
 
@@ -177,6 +185,8 @@ export const api = {
     baseUrl: string,
     apiKey: string | null,
     apiType: string,
+    authHeader: boolean | null,
+    headers: Record<string, string> | null,
     models: ModelConfig[]
   ) =>
     invokeWithLog<string>('save_provider', {
@@ -184,12 +194,16 @@ export const api = {
       baseUrl,
       apiKey,
       apiType,
+      authHeader,
+      headers,
       models,
     }),
   deleteProvider: (providerName: string) =>
     invokeWithLog<string>('delete_provider', { providerName }),
   setPrimaryModel: (modelId: string) =>
     invokeWithLog<string>('set_primary_model', { modelId }),
+  setModelFallbacks: (fallbacks: string[]) =>
+    invokeWithLog<string>('set_model_fallbacks', { fallbacks }),
   addAvailableModel: (modelId: string) =>
     invokeWithLog<string>('add_available_model', { modelId }),
   removeAvailableModel: (modelId: string) =>

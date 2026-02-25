@@ -7,7 +7,7 @@ use crate::utils::{file, platform, shell};
 use log::{debug, error, info, warn};
 use serde_json::{json, Value};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tauri::command;
 
 /// 获取 openclaw.json 配置
@@ -185,11 +185,34 @@ pub async fn get_official_providers() -> Result<Vec<OfficialProvider>, String> {
 
     let providers = vec![
         OfficialProvider {
+            id: "aistock".to_string(),
+            name: "aistock".to_string(),
+            icon: "⭐".to_string(),
+            default_base_url: Some("https://www.aistock.tech/v1".to_string()),
+            api_type: "openai-responses".to_string(),
+            suggested_models: vec![
+                SuggestedModel {
+                    id: "gpt-5.2".to_string(),
+                    name: "gpt-5.2".to_string(),
+                    description: Some("默认推荐模型，仅需填写 API Key 即可使用".to_string()),
+                    context_window: Some(150000),
+                    max_tokens: Some(8192),
+                    recommended: true,
+                },
+            ],
+            recommended: true,
+            is_default: true,
+            requires_api_key: true,
+            docs_url: None,
+        },
+        OfficialProvider {
             id: "anthropic".to_string(),
             name: "Anthropic Claude".to_string(),
             icon: "🟣".to_string(),
             default_base_url: Some("https://api.anthropic.com".to_string()),
             api_type: "anthropic-messages".to_string(),
+            recommended: false,
+            is_default: false,
             requires_api_key: true,
             docs_url: Some("https://docs.openclaw.ai/providers/anthropic".to_string()),
             suggested_models: vec![
@@ -217,6 +240,8 @@ pub async fn get_official_providers() -> Result<Vec<OfficialProvider>, String> {
             icon: "🟢".to_string(),
             default_base_url: Some("https://api.openai.com/v1".to_string()),
             api_type: "openai-completions".to_string(),
+            recommended: false,
+            is_default: false,
             requires_api_key: true,
             docs_url: Some("https://docs.openclaw.ai/providers/openai".to_string()),
             suggested_models: vec![
@@ -244,6 +269,8 @@ pub async fn get_official_providers() -> Result<Vec<OfficialProvider>, String> {
             icon: "🌙".to_string(),
             default_base_url: Some("https://api.moonshot.cn/v1".to_string()),
             api_type: "openai-completions".to_string(),
+            recommended: false,
+            is_default: false,
             requires_api_key: true,
             docs_url: Some("https://docs.openclaw.ai/providers/moonshot".to_string()),
             suggested_models: vec![
@@ -271,6 +298,8 @@ pub async fn get_official_providers() -> Result<Vec<OfficialProvider>, String> {
             icon: "🔮".to_string(),
             default_base_url: Some("https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
             api_type: "openai-completions".to_string(),
+            recommended: false,
+            is_default: false,
             requires_api_key: true,
             docs_url: Some("https://docs.openclaw.ai/providers/qwen".to_string()),
             suggested_models: vec![
@@ -298,6 +327,8 @@ pub async fn get_official_providers() -> Result<Vec<OfficialProvider>, String> {
             icon: "🔵".to_string(),
             default_base_url: Some("https://api.deepseek.com".to_string()),
             api_type: "openai-completions".to_string(),
+            recommended: false,
+            is_default: false,
             requires_api_key: true,
             docs_url: None,
             suggested_models: vec![
@@ -325,6 +356,8 @@ pub async fn get_official_providers() -> Result<Vec<OfficialProvider>, String> {
             icon: "🔷".to_string(),
             default_base_url: Some("https://open.bigmodel.cn/api/paas/v4".to_string()),
             api_type: "openai-completions".to_string(),
+            recommended: false,
+            is_default: false,
             requires_api_key: true,
             docs_url: Some("https://docs.openclaw.ai/providers/glm".to_string()),
             suggested_models: vec![
@@ -344,6 +377,8 @@ pub async fn get_official_providers() -> Result<Vec<OfficialProvider>, String> {
             icon: "🟡".to_string(),
             default_base_url: Some("https://api.minimax.io/anthropic".to_string()),
             api_type: "anthropic-messages".to_string(),
+            recommended: false,
+            is_default: false,
             requires_api_key: true,
             docs_url: Some("https://docs.openclaw.ai/providers/minimax".to_string()),
             suggested_models: vec![
@@ -363,6 +398,8 @@ pub async fn get_official_providers() -> Result<Vec<OfficialProvider>, String> {
             icon: "🏛️".to_string(),
             default_base_url: Some("https://api.venice.ai/api/v1".to_string()),
             api_type: "openai-completions".to_string(),
+            recommended: false,
+            is_default: false,
             requires_api_key: true,
             docs_url: Some("https://docs.openclaw.ai/providers/venice".to_string()),
             suggested_models: vec![
@@ -382,6 +419,8 @@ pub async fn get_official_providers() -> Result<Vec<OfficialProvider>, String> {
             icon: "🔄".to_string(),
             default_base_url: Some("https://openrouter.ai/api/v1".to_string()),
             api_type: "openai-completions".to_string(),
+            recommended: false,
+            is_default: false,
             requires_api_key: true,
             docs_url: Some("https://docs.openclaw.ai/providers/openrouter".to_string()),
             suggested_models: vec![
@@ -401,6 +440,8 @@ pub async fn get_official_providers() -> Result<Vec<OfficialProvider>, String> {
             icon: "🟠".to_string(),
             default_base_url: Some("http://localhost:11434".to_string()),
             api_type: "openai-completions".to_string(),
+            recommended: false,
+            is_default: false,
             requires_api_key: false,
             docs_url: Some("https://docs.openclaw.ai/providers/ollama".to_string()),
             suggested_models: vec![
@@ -441,6 +482,17 @@ pub async fn get_ai_config() -> Result<AIConfigOverview, String> {
         .map(|s| s.to_string());
     info!("[AI 配置] 主模型: {:?}", primary_model);
 
+    let model_fallbacks: Vec<String> = config
+        .pointer("/agents/defaults/model/fallbacks")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    info!("[AI 配置] 回退模型数: {}", model_fallbacks.len());
+
     // 解析可用模型列表
     let available_models: Vec<String> = config
         .pointer("/agents/defaults/models")
@@ -467,16 +519,43 @@ pub async fn get_ai_config() -> Result<AIConfigOverview, String> {
                 .unwrap_or("")
                 .to_string();
 
+            let provider_api_type = provider_config
+                .get("api")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let auth_header = provider_config
+                .get("authHeader")
+                .and_then(|v| v.as_bool());
+
+            let headers = provider_config
+                .get("headers")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect::<HashMap<String, String>>()
+                })
+                .filter(|m| !m.is_empty());
+
             let api_key = provider_config
                 .get("apiKey")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
-            let api_key_masked = api_key.as_ref().map(|key| {
+            let has_api_key = api_key
+                .as_ref()
+                .map(|k| !k.trim().is_empty())
+                .unwrap_or(false);
+
+            let api_key_masked = api_key.as_ref().and_then(|key| {
+                if key.trim().is_empty() {
+                    return None;
+                }
                 if key.len() > 8 {
-                    format!("{}...{}", &key[..4], &key[key.len() - 4..])
+                    Some(format!("{}...{}", &key[..4], &key[key.len() - 4..]))
                 } else {
-                    "****".to_string()
+                    Some("****".to_string())
                 }
             });
 
@@ -496,6 +575,17 @@ pub async fn get_ai_config() -> Result<AIConfigOverview, String> {
                                 .to_string();
                             let full_id = format!("{}/{}", provider_name, id);
                             let is_primary = primary_model.as_ref() == Some(&full_id);
+                            let params = m
+                                .get("params")
+                                .cloned()
+                                .or_else(|| {
+                                    config
+                                        .pointer("/agents/defaults/models")
+                                        .and_then(|v| v.as_object())
+                                        .and_then(|models_obj| models_obj.get(&full_id))
+                                        .and_then(|entry| entry.get("params"))
+                                        .cloned()
+                                });
 
                             info!("[AI 配置] 解析模型: {} (is_primary: {})", full_id, is_primary);
 
@@ -512,6 +602,7 @@ pub async fn get_ai_config() -> Result<AIConfigOverview, String> {
                                     .get("maxTokens")
                                     .and_then(|v| v.as_u64())
                                     .map(|n| n as u32),
+                                params,
                                 is_primary,
                             })
                         })
@@ -524,8 +615,11 @@ pub async fn get_ai_config() -> Result<AIConfigOverview, String> {
             configured_providers.push(ConfiguredProvider {
                 name: provider_name.clone(),
                 base_url,
+                api_type: provider_api_type,
+                auth_header,
+                headers,
                 api_key_masked,
-                has_api_key: api_key.is_some(),
+                has_api_key,
                 models,
             });
         }
@@ -542,6 +636,7 @@ pub async fn get_ai_config() -> Result<AIConfigOverview, String> {
 
     Ok(AIConfigOverview {
         primary_model,
+        model_fallbacks,
         configured_providers,
         available_models,
     })
@@ -554,6 +649,8 @@ pub async fn save_provider(
     base_url: String,
     api_key: Option<String>,
     api_type: String,
+    auth_header: Option<bool>,
+    headers: Option<HashMap<String, String>>,
     models: Vec<ModelConfig>,
 ) -> Result<String, String> {
     info!(
@@ -621,46 +718,130 @@ pub async fn save_provider(
         })
         .collect();
 
-    // 构建 Provider 配置
-    let mut provider_config = json!({
-        "baseUrl": base_url,
-        "models": models_json,
-    });
+    let sub2api_template = if provider_name == "aistock" {
+        config.pointer("/models/providers/sub2api").cloned()
+    } else {
+        None
+    };
 
-    // 处理 API Key：如果传入了新的非空 key，使用新的；否则保留原有的
-    if let Some(key) = api_key {
-        if !key.is_empty() {
-            // 使用新传入的 API Key
-            provider_config["apiKey"] = json!(key);
-            info!("[保存 Provider] 使用新的 API Key");
-        } else {
-            // 空字符串表示不更改，尝试保留原有的 API Key
-            if let Some(existing_key) = config
-                .pointer(&format!("/models/providers/{}/apiKey", provider_name))
-                .and_then(|v| v.as_str())
-            {
-                provider_config["apiKey"] = json!(existing_key);
-                info!("[保存 Provider] 保留原有的 API Key");
+    let models_json_for_provider = models_json.clone();
+
+    let mut provider_config = if let Some(template) = sub2api_template {
+        template
+    } else {
+        json!({
+            "baseUrl": base_url,
+            "api": api_type,
+            "models": models_json_for_provider,
+        })
+    };
+
+    if provider_name != "aistock" {
+        if let Some(enabled) = auth_header {
+            provider_config["authHeader"] = json!(enabled);
+        }
+
+        if let Some(h) = headers {
+            if !h.is_empty() {
+                provider_config["headers"] = json!(h);
             }
         }
+    }
+
+    if provider_name == "aistock" {
+        provider_config["baseUrl"] = json!(base_url);
+        provider_config["api"] = json!("openai-responses");
+        provider_config["authHeader"] = json!(true);
+
+        if provider_config.get("headers").is_none() {
+            provider_config["headers"] = json!({
+                "OpenAI-Beta": "responses=v1",
+                "User-Agent": "curl/8.0"
+            });
+        }
+
+        if provider_config.get("models").and_then(|v| v.as_array()).map(|arr| arr.is_empty()).unwrap_or(true) {
+            provider_config["models"] = json!(models_json.clone());
+        }
+    }
+
+    let input_api_key = api_key
+        .as_ref()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty());
+
+    if provider_name == "aistock" {
+        if let Some(key) = &input_api_key {
+            if !key.starts_with("sk-") {
+                return Err("aistock API Key 格式无效，请使用 sk- 开头的 Key".to_string());
+            }
+        }
+    }
+
+    if let Some(key) = input_api_key {
+        provider_config["apiKey"] = json!(key);
+        info!("[保存 Provider] 使用新的 API Key");
     } else {
-        // None 表示不更改，尝试保留原有的 API Key
-        if let Some(existing_key) = config
+        let existing_provider_key = config
             .pointer(&format!("/models/providers/{}/apiKey", provider_name))
             .and_then(|v| v.as_str())
-        {
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .filter(|s| provider_name != "aistock" || s.starts_with("sk-"));
+
+        let fallback_key = if provider_name == "aistock" {
+            config
+                .pointer("/models/providers/sub2api/apiKey")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .filter(|s| s.starts_with("sk-"))
+        } else {
+            None
+        };
+
+        let final_key = if provider_name == "aistock" {
+            fallback_key.or(existing_provider_key)
+        } else {
+            existing_provider_key
+        };
+
+        if let Some(existing_key) = final_key {
             provider_config["apiKey"] = json!(existing_key);
-            info!("[保存 Provider] 保留原有的 API Key");
+            info!("[保存 Provider] 保留现有 API Key");
         }
     }
 
     // 保存 Provider 配置
-    config["models"]["providers"][&provider_name] = provider_config;
+    config["models"]["providers"][&provider_name] = provider_config.clone();
 
-    // 将模型添加到 agents.defaults.models
-    for model in &models {
-        let full_id = format!("{}/{}", provider_name, model.id);
-        config["agents"]["defaults"]["models"][&full_id] = json!({});
+    let input_params_map: HashMap<String, Value> = models
+        .iter()
+        .filter_map(|m| m.params.clone().map(|p| (m.id.clone(), p)))
+        .collect();
+
+    let model_ids: Vec<String> = provider_config
+        .get("models")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_else(|| models.iter().map(|m| m.id.clone()).collect());
+
+    let mut seen = HashSet::new();
+    for model_id in model_ids {
+        if !seen.insert(model_id.clone()) {
+            continue;
+        }
+
+        let full_id = format!("{}/{}", provider_name, model_id);
+        let mut model_ref = json!({});
+        if let Some(params) = input_params_map.get(&model_id) {
+            model_ref["params"] = params.clone();
+        }
+        config["agents"]["defaults"]["models"][&full_id] = model_ref;
     }
 
     // 更新元数据
@@ -748,6 +929,30 @@ pub async fn set_primary_model(model_id: String) -> Result<String, String> {
     info!("[设置主模型] ✓ 主模型已设置为: {}", model_id);
 
     Ok(format!("主模型已设置为 {}", model_id))
+}
+
+#[command]
+pub async fn set_model_fallbacks(fallbacks: Vec<String>) -> Result<String, String> {
+    info!("[设置回退模型] 设置回退模型: {:?}", fallbacks);
+
+    let mut config = load_openclaw_config()?;
+
+    if config.get("agents").is_none() {
+        config["agents"] = json!({});
+    }
+    if config["agents"].get("defaults").is_none() {
+        config["agents"]["defaults"] = json!({});
+    }
+    if config["agents"]["defaults"].get("model").is_none() {
+        config["agents"]["defaults"]["model"] = json!({});
+    }
+
+    config["agents"]["defaults"]["model"]["fallbacks"] = json!(fallbacks);
+
+    save_openclaw_config(&config)?;
+    info!("[设置回退模型] ✓ 回退模型已更新");
+
+    Ok("回退模型已更新".to_string())
 }
 
 /// 添加模型到可用列表

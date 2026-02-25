@@ -52,6 +52,7 @@ fn main() {
             config::save_provider,
             config::delete_provider,
             config::set_primary_model,
+            config::set_model_fallbacks,
             config::add_available_model,
             config::remove_available_model,
             // 飞书插件管理
@@ -68,6 +69,7 @@ fn main() {
             installer::install_nodejs,
             installer::install_openclaw,
             installer::init_openclaw_config,
+            installer::get_install_logs,
             installer::open_install_terminal,
             installer::uninstall_openclaw,
             // 版本更新

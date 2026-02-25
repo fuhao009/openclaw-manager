@@ -40,8 +40,19 @@ export function Setup({ onComplete, embedded = false }: SetupProps) {
   const [envStatus, setEnvStatus] = useState<EnvironmentStatus | null>(null);
   const [checking, setChecking] = useState(true);
   const [installing, setInstalling] = useState<'nodejs' | 'openclaw' | null>(null);
+  const [installLogs, setInstallLogs] = useState<string[]>([]);
+  const [installPhaseMessage, setInstallPhaseMessage] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState<'check' | 'install' | 'complete'>('check');
+
+  const fetchInstallLogs = async () => {
+    try {
+      const logs = await invoke<string[]>('get_install_logs', { lines: 200 });
+      setInstallLogs(logs);
+    } catch (e) {
+      setupLogger.debug('获取安装日志失败', e);
+    }
+  };
 
   const checkEnvironment = async () => {
     setupLogger.info('检查系统环境...');
@@ -72,12 +83,23 @@ export function Setup({ onComplete, embedded = false }: SetupProps) {
   useEffect(() => {
     setupLogger.info('Setup 组件初始化');
     checkEnvironment();
+    fetchInstallLogs();
   }, []);
+
+  useEffect(() => {
+    if (!installing) return;
+
+    fetchInstallLogs();
+    const timer = setInterval(fetchInstallLogs, 1000);
+    return () => clearInterval(timer);
+  }, [installing]);
 
   const handleInstallNodejs = async () => {
     setupLogger.action('安装 Node.js');
     setupLogger.info('开始安装 Node.js...');
     setInstalling('nodejs');
+    setInstallPhaseMessage('正在安装 Node.js，请稍候...');
+    setInstallLogs([]);
     setError(null);
     
     try {
@@ -85,26 +107,32 @@ export function Setup({ onComplete, embedded = false }: SetupProps) {
       const result = await invoke<InstallResult>('install_nodejs');
       
       if (result.success) {
+        setInstallPhaseMessage('Node.js 安装成功，正在刷新环境状态...');
         setupLogger.info('✅ Node.js 安装成功');
         // 重新检查环境
         await checkEnvironment();
       } else if (result.message.includes('重启')) {
         // 需要重启应用
+        setInstallPhaseMessage('Node.js 安装完成，需要重启应用以生效');
         setError('Node.js 安装完成，请重启应用以使环境变量生效');
       } else {
         // 打开终端手动安装
+        setInstallPhaseMessage('自动安装失败，已打开终端手动安装');
         await invoke<string>('open_install_terminal', { installType: 'nodejs' });
         setError('已打开安装终端，请在终端中完成安装后点击"重新检查"');
       }
     } catch (e) {
       // 如果自动安装失败，打开终端
       try {
+        setInstallPhaseMessage('自动安装失败，已打开终端手动安装');
         await invoke<string>('open_install_terminal', { installType: 'nodejs' });
         setError('已打开安装终端，请在终端中完成安装后点击"重新检查"');
       } catch (termErr) {
+        setInstallPhaseMessage('安装失败，请查看安装日志与错误信息');
         setError(`安装失败: ${e}。${termErr}`);
       }
     } finally {
+      await fetchInstallLogs();
       setInstalling(null);
     }
   };
@@ -113,33 +141,41 @@ export function Setup({ onComplete, embedded = false }: SetupProps) {
     setupLogger.action('安装 OpenClaw');
     setupLogger.info('开始安装 OpenClaw...');
     setInstalling('openclaw');
+    setInstallPhaseMessage('正在安装 OpenClaw，请稍候...');
+    setInstallLogs([]);
     setError(null);
     
     try {
       const result = await invoke<InstallResult>('install_openclaw');
       
       if (result.success) {
+        setInstallPhaseMessage('OpenClaw 安装成功，正在初始化配置...');
         setupLogger.info('✅ OpenClaw 安装成功，初始化配置...');
         // 初始化配置
         await invoke<InstallResult>('init_openclaw_config');
+        setInstallPhaseMessage('配置初始化完成，正在刷新环境状态...');
         setupLogger.info('✅ 配置初始化完成');
         // 重新检查环境
         await checkEnvironment();
       } else {
         setupLogger.warn('自动安装失败，打开终端手动安装');
         // 打开终端手动安装
+        setInstallPhaseMessage('自动安装失败，已打开终端手动安装');
         await invoke<string>('open_install_terminal', { installType: 'openclaw' });
         setError('已打开安装终端，请在终端中完成安装后点击"重新检查"');
       }
     } catch (e) {
       setupLogger.error('安装失败，尝试打开终端', e);
       try {
+        setInstallPhaseMessage('自动安装失败，已打开终端手动安装');
         await invoke<string>('open_install_terminal', { installType: 'openclaw' });
         setError('已打开安装终端，请在终端中完成安装后点击"重新检查"');
       } catch (termErr) {
+        setInstallPhaseMessage('安装失败，请查看安装日志与错误信息');
         setError(`安装失败: ${e}。${termErr}`);
       }
     } finally {
+      await fetchInstallLogs();
       setInstalling(null);
     }
   };
@@ -284,6 +320,43 @@ export function Setup({ onComplete, embedded = false }: SetupProps) {
               >
                 <p className="text-yellow-400 text-sm">{error}</p>
               </motion.div>
+            )}
+
+            {installing && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-3 bg-brand-500/10 border border-brand-500/30 rounded-lg flex items-center gap-2"
+              >
+                <Loader2 className="w-4 h-4 text-brand-400 animate-spin" />
+                <p className="text-brand-300 text-sm">{installPhaseMessage || '安装进行中...'}</p>
+              </motion.div>
+            )}
+
+            {(installing !== null || installLogs.length > 0) && (
+              <div className="p-3 bg-dark-900/60 border border-dark-700/80 rounded-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-medium text-dark-300">安装日志（最近 200 行）</p>
+                  <button
+                    onClick={fetchInstallLogs}
+                    className="text-xs text-claw-400 hover:text-claw-300 transition-colors"
+                  >
+                    刷新
+                  </button>
+                </div>
+
+                <div className="max-h-48 overflow-y-auto rounded-md bg-dark-950/80 border border-dark-800 p-2 font-mono text-xs">
+                  {installLogs.length === 0 ? (
+                    <p className="text-dark-500">暂无安装日志，开始安装后会显示实时输出</p>
+                  ) : (
+                    installLogs.map((line, index) => (
+                      <p key={`${index}-${line.slice(0, 24)}`} className="text-dark-300 leading-5">
+                        {line}
+                      </p>
+                    ))
+                  )}
+                </div>
+              </div>
             )}
 
             {/* 操作按钮 */}

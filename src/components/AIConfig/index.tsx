@@ -42,6 +42,8 @@ interface OfficialProvider {
   default_base_url: string | null;
   api_type: string;
   suggested_models: SuggestedModel[];
+  recommended: boolean;
+  is_default: boolean;
   requires_api_key: boolean;
   docs_url: string | null;
 }
@@ -53,12 +55,16 @@ interface ConfiguredModel {
   api_type: string | null;
   context_window: number | null;
   max_tokens: number | null;
+  params: Record<string, unknown> | null;
   is_primary: boolean;
 }
 
 interface ConfiguredProvider {
   name: string;
   base_url: string;
+  api_type: string | null;
+  auth_header: boolean | null;
+  headers: Record<string, string> | null;
   api_key_masked: string | null;
   has_api_key: boolean;
   models: ConfiguredModel[];
@@ -66,6 +72,7 @@ interface ConfiguredProvider {
 
 interface AIConfigOverview {
   primary_model: string | null;
+  model_fallbacks: string[];
   configured_providers: ConfiguredProvider[];
   available_models: string[];
 }
@@ -78,6 +85,7 @@ interface ModelConfig {
   context_window: number | null;
   max_tokens: number | null;
   reasoning: boolean | null;
+  params: Record<string, unknown> | null;
   cost: { input: number; output: number; cache_read: number; cache_write: number } | null;
 }
 
@@ -100,6 +108,8 @@ interface ProviderDialogProps {
   editingProvider?: ConfiguredProvider | null;
 }
 
+const AISTOCK_HEADERS_TEXT = 'OpenAI-Beta: responses=v1\nUser-Agent: curl/8.0';
+
 function ProviderDialog({ officialProviders, onClose, onSave, editingProvider }: ProviderDialogProps) {
   const isEditing = !!editingProvider;
   const [step, setStep] = useState<'select' | 'configure'>(isEditing ? 'configure' : 'select');
@@ -118,10 +128,18 @@ function ProviderDialog({ officialProviders, onClose, onSave, editingProvider }:
   const [apiKey, setApiKey] = useState('');
   const [apiType, setApiType] = useState(() => {
     if (editingProvider) {
-      const firstModel = editingProvider.models[0];
-      return firstModel?.api_type || 'openai-completions';
+      return editingProvider.api_type || editingProvider.models[0]?.api_type || 'openai-completions';
     }
     return 'openai-completions';
+  });
+  const [authHeaderEnabled, setAuthHeaderEnabled] = useState<boolean>(
+    editingProvider?.auth_header ?? true
+  );
+  const [headersText, setHeadersText] = useState<string>(() => {
+    if (!editingProvider?.headers) return '';
+    return Object.entries(editingProvider.headers)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join('\n');
   });
   const [showApiKey, setShowApiKey] = useState(false);
   const [selectedModels, setSelectedModels] = useState<string[]>(() => {
@@ -131,6 +149,13 @@ function ProviderDialog({ officialProviders, onClose, onSave, editingProvider }:
     return [];
   });
   const [customModelId, setCustomModelId] = useState('');
+  const [disableStreaming, setDisableStreaming] = useState<boolean>(() => {
+    if (!editingProvider || editingProvider.models.length === 0) return false;
+    return editingProvider.models.every(model => {
+      const params = model.params ?? {};
+      return params.stream === false || params.streaming === false;
+    });
+  });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [showCustomUrlWarning, setShowCustomUrlWarning] = useState(false);
@@ -149,6 +174,13 @@ function ProviderDialog({ officialProviders, onClose, onSave, editingProvider }:
     setProviderName(provider.id);
     setBaseUrl(provider.default_base_url || '');
     setApiType(provider.api_type);
+    if (provider.id === 'aistock') {
+      setAuthHeaderEnabled(true);
+      setHeadersText(AISTOCK_HEADERS_TEXT);
+    } else {
+      setAuthHeaderEnabled(true);
+      setHeadersText('');
+    }
     // 预选推荐模型
     const recommended = provider.suggested_models.filter(m => m.recommended).map(m => m.id);
     setSelectedModels(recommended.length > 0 ? recommended : [provider.suggested_models[0]?.id].filter(Boolean));
@@ -207,6 +239,26 @@ function ProviderDialog({ officialProviders, onClose, onSave, editingProvider }:
       return;
     }
 
+    const parsedHeaders: Record<string, string> = {};
+    if (headersText.trim()) {
+      for (const rawLine of headersText.split('\n')) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const sepIndex = line.indexOf(':');
+        if (sepIndex <= 0) {
+          setFormError(`Header 格式错误: ${line}，请使用 key: value`);
+          return;
+        }
+        const key = line.slice(0, sepIndex).trim();
+        const value = line.slice(sepIndex + 1).trim();
+        if (!key || !value) {
+          setFormError(`Header 格式错误: ${line}，请使用 key: value`);
+          return;
+        }
+        parsedHeaders[key] = value;
+      }
+    }
+
     // 如果使用官方名字但自定义了地址，给出警告
     if (isCustomUrlWithOfficialName && !forceOverride) {
       setShowCustomUrlWarning(true);
@@ -221,6 +273,20 @@ function ProviderDialog({ officialProviders, onClose, onSave, editingProvider }:
         const suggested = selectedOfficial?.suggested_models.find(m => m.id === modelId);
         // 编辑模式下，保留原有模型的配置
         const existingModel = editingProvider?.models.find(m => m.id === modelId);
+        const mergedParams: Record<string, unknown> = existingModel?.params
+          ? { ...existingModel.params }
+          : {};
+
+        if (disableStreaming) {
+          mergedParams.stream = false;
+          mergedParams.streaming = false;
+        } else {
+          delete mergedParams.stream;
+          delete mergedParams.streaming;
+        }
+
+        const params = Object.keys(mergedParams).length > 0 ? mergedParams : null;
+
         return {
           id: modelId,
           name: suggested?.name || existingModel?.name || modelId,
@@ -229,6 +295,7 @@ function ProviderDialog({ officialProviders, onClose, onSave, editingProvider }:
           context_window: suggested?.context_window || existingModel?.context_window || 200000,
           max_tokens: suggested?.max_tokens || existingModel?.max_tokens || 8192,
           reasoning: false,
+          params,
           cost: null,
         };
       });
@@ -238,6 +305,8 @@ function ProviderDialog({ officialProviders, onClose, onSave, editingProvider }:
         baseUrl,
         apiKey: apiKey || null,
         apiType,
+        authHeader: authHeaderEnabled,
+        headers: Object.keys(parsedHeaders).length > 0 ? parsedHeaders : null,
         models,
       });
 
@@ -296,20 +365,27 @@ function ProviderDialog({ officialProviders, onClose, onSave, editingProvider }:
                   <h3 className="text-sm font-medium text-gray-400">官方 Provider</h3>
                   <div className="grid grid-cols-2 gap-3">
                     {officialProviders.map(provider => (
-                <button
-                  key={provider.id}
+                      <button
+                        key={provider.id}
                         onClick={() => handleSelectOfficial(provider)}
-                        className="flex items-center gap-3 p-4 rounded-xl bg-dark-700 border border-dark-500 hover:border-claw-500/50 hover:bg-dark-600 transition-all text-left group"
-                >
-                  <span className="text-2xl">{provider.icon}</span>
+                        className="flex items-center gap-2 p-4 rounded-xl bg-dark-700 border border-dark-500 hover:border-claw-500/50 hover:bg-dark-600 transition-all text-left group"
+                      >
                         <div className="flex-1 min-w-0">
-                          <p className="font-medium text-white truncate">{provider.name}</p>
+                          <p className="font-medium text-white truncate flex items-center gap-1">
+                            <span className="truncate">{provider.name}</span>
+                            {provider.is_default && (
+                              <span className="px-1.5 py-0.5 rounded bg-claw-500/20 text-[10px] text-claw-300">默认</span>
+                            )}
+                            {!provider.is_default && provider.recommended && (
+                              <span className="px-1.5 py-0.5 rounded bg-brand-500/20 text-[10px] text-brand-300">推荐</span>
+                            )}
+                          </p>
                           <p className="text-xs text-gray-500 truncate">
                             {provider.suggested_models.length} 个模型
                           </p>
-                    </div>
+                        </div>
                         <ChevronRight size={16} className="text-gray-500 group-hover:text-claw-400 transition-colors" />
-                </button>
+                      </button>
                     ))}
           </div>
         </div>
@@ -435,8 +511,49 @@ function ProviderDialog({ officialProviders, onClose, onSave, editingProvider }:
                     className="input-base"
                   >
                     <option value="openai-completions">OpenAI 兼容 (openai-completions)</option>
+                    <option value="openai-responses">OpenAI Responses (openai-responses)</option>
                     <option value="anthropic-messages">Anthropic 兼容 (anthropic-messages)</option>
                   </select>
+                </div>
+
+                <div className="p-3 rounded-lg border border-dark-500 bg-dark-700/40 space-y-2">
+                  <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={authHeaderEnabled}
+                      onChange={e => setAuthHeaderEnabled(e.target.checked)}
+                      className="rounded border-dark-400 bg-dark-800 text-claw-500 focus:ring-claw-500"
+                    />
+                    启用 authHeader（使用 Authorization 头）
+                  </label>
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-2">
+                    自定义 Headers
+                    <span className="text-gray-600 text-xs ml-2">(每行 key: value)</span>
+                  </label>
+                  <textarea
+                    value={headersText}
+                    onChange={e => { setFormError(null); setHeadersText(e.target.value); }}
+                    placeholder={"OpenAI-Beta: responses=v1\nUser-Agent: curl/8.0"}
+                    className="input-base min-h-[90px] font-mono text-xs"
+                  />
+                </div>
+
+                <div className="p-3 rounded-lg border border-dark-500 bg-dark-700/40 space-y-2">
+                  <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={disableStreaming}
+                      onChange={e => setDisableStreaming(e.target.checked)}
+                      className="rounded border-dark-400 bg-dark-800 text-claw-500 focus:ring-claw-500"
+                    />
+                    模型参数：禁用流式输出（stream=false）
+                  </label>
+                  <p className="text-xs text-gray-500">
+                    启用后会为所选模型写入 params.stream=false 与 params.streaming=false，适配不支持流式工具调用的服务端。
+                  </p>
                 </div>
 
                 {/* 模型选择 */}
@@ -683,10 +800,9 @@ function ProviderCard({ provider, officialProviders, onSetPrimary, onRefresh, on
     >
       {/* 头部 */}
       <div
-        className="flex items-center gap-3 p-4 cursor-pointer hover:bg-dark-600/50 transition-colors"
+        className="flex items-center gap-2 p-4 cursor-pointer hover:bg-dark-600/50 transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
-        <span className="text-xl">{officialInfo?.icon || '🔌'}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="font-medium text-white">{provider.name}</h3>
@@ -730,6 +846,22 @@ function ProviderCard({ provider, officialProviders, onSetPrimary, onRefresh, on
                   </code>
                 </div>
               )}
+
+              <div className="flex flex-wrap gap-2 text-xs text-gray-400">
+                {provider.api_type && (
+                  <span className="px-2 py-1 rounded bg-dark-600">api: {provider.api_type}</span>
+                )}
+                {provider.auth_header !== null && provider.auth_header !== undefined && (
+                  <span className="px-2 py-1 rounded bg-dark-600">
+                    authHeader: {provider.auth_header ? 'true' : 'false'}
+                  </span>
+                )}
+                {provider.headers && Object.keys(provider.headers).length > 0 && (
+                  <span className="px-2 py-1 rounded bg-dark-600">
+                    headers: {Object.keys(provider.headers).length}
+                  </span>
+                )}
+              </div>
 
               {/* 模型列表 */}
               <div className="space-y-2">
@@ -849,6 +981,7 @@ export function AIConfig() {
   const [error, setError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<AITestResult | null>(null);
+  const [fallbackInput, setFallbackInput] = useState('');
 
   const handleEditProvider = (provider: ConfiguredProvider) => {
     setEditingProvider(provider);
@@ -896,7 +1029,13 @@ export function AIConfig() {
         invoke<OfficialProvider[]>('get_official_providers'),
         invoke<AIConfigOverview>('get_ai_config'),
       ]);
-      setOfficialProviders(officials);
+      const sortedOfficials = [...officials].sort((a, b) => {
+        if (a.is_default !== b.is_default) return a.is_default ? -1 : 1;
+        if (a.recommended !== b.recommended) return a.recommended ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      setOfficialProviders(sortedOfficials);
       setAiConfig(config);
       aiLogger.info(`加载完成: ${officials.length} 个官方 Provider, ${config.configured_providers.length} 个已配置`);
     } catch (e) {
@@ -919,6 +1058,32 @@ export function AIConfig() {
     } catch (e) {
       aiLogger.error('设置主模型失败', e);
       alert('设置失败: ' + e);
+    }
+  };
+
+  const handleAddFallback = async () => {
+    const next = fallbackInput.trim();
+    if (!next || !aiConfig) return;
+    const merged = Array.from(new Set([...(aiConfig.model_fallbacks || []), next]));
+    try {
+      await invoke('set_model_fallbacks', { fallbacks: merged });
+      setFallbackInput('');
+      await loadData();
+    } catch (e) {
+      aiLogger.error('设置回退模型失败', e);
+      alert('设置回退模型失败: ' + e);
+    }
+  };
+
+  const handleRemoveFallback = async (modelId: string) => {
+    if (!aiConfig) return;
+    const next = (aiConfig.model_fallbacks || []).filter(m => m !== modelId);
+    try {
+      await invoke('set_model_fallbacks', { fallbacks: next });
+      await loadData();
+    } catch (e) {
+      aiLogger.error('移除回退模型失败', e);
+      alert('移除回退模型失败: ' + e);
     }
   };
 
@@ -1001,6 +1166,41 @@ export function AIConfig() {
               )}
               测试连接
             </button>
+          </div>
+
+          <div className="mt-3 p-3 bg-dark-700/40 rounded-xl border border-dark-500 space-y-2">
+            <p className="text-sm text-gray-400">回退模型（fallbacks）</p>
+            <div className="flex flex-wrap gap-2">
+              {(aiConfig?.model_fallbacks || []).length === 0 ? (
+                <span className="text-xs text-gray-500">未配置回退模型</span>
+              ) : (
+                aiConfig?.model_fallbacks.map(model => (
+                  <span
+                    key={model}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-dark-600 text-xs text-gray-300"
+                  >
+                    {model}
+                    <button
+                      onClick={() => handleRemoveFallback(model)}
+                      className="text-gray-500 hover:text-red-400"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))
+              )}
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={fallbackInput}
+                onChange={e => setFallbackInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAddFallback()}
+                placeholder="例如: crs/gpt-5.2"
+                className="input-base flex-1"
+              />
+              <button onClick={handleAddFallback} className="btn-secondary">添加</button>
+            </div>
           </div>
 
           {/* AI 测试结果 */}

@@ -64,6 +64,8 @@ pub struct AgentModelConfig {
     /// 主模型 (格式: provider/model-id)
     #[serde(default)]
     pub primary: Option<String>,
+    #[serde(default)]
+    pub fallbacks: Vec<String>,
 }
 
 /// 模型配置
@@ -80,9 +82,15 @@ pub struct ProviderConfig {
     /// API 地址
     #[serde(rename = "baseUrl")]
     pub base_url: String,
+    #[serde(default)]
+    pub api: Option<String>,
     /// API Key
     #[serde(rename = "apiKey")]
     pub api_key: Option<String>,
+    #[serde(rename = "authHeader", default)]
+    pub auth_header: Option<bool>,
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
     /// 模型列表
     #[serde(default)]
     pub models: Vec<ModelConfig>,
@@ -110,6 +118,8 @@ pub struct ModelConfig {
     /// 是否支持推理模式
     #[serde(default)]
     pub reasoning: Option<bool>,
+    #[serde(default)]
+    pub params: Option<serde_json::Value>,
     /// 成本配置
     #[serde(default)]
     pub cost: Option<ModelCostConfig>,
@@ -185,6 +195,9 @@ pub struct OfficialProvider {
     pub api_type: String,
     /// 推荐模型列表
     pub suggested_models: Vec<SuggestedModel>,
+    pub recommended: bool,
+    #[serde(default)]
+    pub is_default: bool,
     /// 是否需要 API Key
     pub requires_api_key: bool,
     /// 文档链接
@@ -215,6 +228,9 @@ pub struct ConfiguredProvider {
     pub name: String,
     /// API 地址
     pub base_url: String,
+    pub api_type: Option<String>,
+    pub auth_header: Option<bool>,
+    pub headers: Option<HashMap<String, String>>,
     /// API Key (脱敏显示)
     pub api_key_masked: Option<String>,
     /// 是否有 API Key
@@ -238,6 +254,7 @@ pub struct ConfiguredModel {
     pub context_window: Option<u32>,
     /// 最大输出
     pub max_tokens: Option<u32>,
+    pub params: Option<serde_json::Value>,
     /// 是否为主模型
     pub is_primary: bool,
 }
@@ -247,6 +264,7 @@ pub struct ConfiguredModel {
 pub struct AIConfigOverview {
     /// 主模型
     pub primary_model: Option<String>,
+    pub model_fallbacks: Vec<String>,
     /// 已配置的 Provider 列表
     pub configured_providers: Vec<ConfiguredProvider>,
     /// 可用模型列表
