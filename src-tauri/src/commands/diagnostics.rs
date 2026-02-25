@@ -3,6 +3,32 @@ use crate::utils::{platform, shell};
 use tauri::command;
 use log::{info, warn, error, debug};
 
+fn has_configured_api_key_in_config(config_path: &str) -> bool {
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let config = match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    config
+        .pointer("/models/providers")
+        .and_then(|v| v.as_object())
+        .map(|providers| {
+            providers.values().any(|provider| {
+                provider
+                    .get("apiKey")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// 去除 ANSI 转义序列（颜色代码等）
 fn strip_ansi_codes(input: &str) -> String {
     // 匹配 ANSI 转义序列: ESC[ ... m 或 ESC[ ... 其他控制字符
@@ -142,18 +168,22 @@ pub async fn run_doctor() -> Result<Vec<DiagnosticResult>, String> {
     // 检查环境变量文件
     let env_path = platform::get_env_file_path();
     let env_exists = std::path::Path::new(&env_path).exists();
+    let has_api_key_in_config = has_configured_api_key_in_config(&config_path);
+    let env_ready = env_exists || has_api_key_in_config;
     results.push(DiagnosticResult {
         name: "环境变量".to_string(),
-        passed: env_exists,
+        passed: env_ready,
         message: if env_exists {
             format!("环境变量文件存在: {}", env_path)
+        } else if has_api_key_in_config {
+            "环境变量文件不存在，但已在配置文件中检测到 API Key".to_string()
         } else {
-            "环境变量文件不存在".to_string()
+            "环境变量文件不存在，且未检测到 API Key 配置".to_string()
         },
-        suggestion: if env_exists {
+        suggestion: if env_ready {
             None
         } else {
-            Some("请配置 AI API Key".to_string())
+            Some("请在 AI 配置页面填写 API Key，或创建 ~/.openclaw/env".to_string())
         },
     });
     
